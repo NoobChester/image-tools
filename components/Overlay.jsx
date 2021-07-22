@@ -54,7 +54,10 @@ module.exports = class ImageToolsOverlay extends React.PureComponent {
         borderColor: int2hex(this.props.settings.get('lensColor', 0)),
         get imageRendering () {
           return get('disableAntiAliasing', null) ? 'pixelated' : null;
-        }
+        },
+        get borderRadius () {
+          return `${get('borderRadius', 50)}%`;
+        },
       }
     };
     this.Patcher = new Patcher.Overlay(props.settings, props.children, {
