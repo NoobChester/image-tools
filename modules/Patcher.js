@@ -1,7 +1,7 @@
 /* eslint-disable no-use-before-define, object-property-newline,no-undefined */
 // noinspection JSUnusedGlobalSymbols
 
-const { React, getModule } = require('powercord/webpack');
+const { React, getModule, getModuleByDisplayName } = require('powercord/webpack');
 const { findInReactTree } = require('powercord/util');
 const { inject, uninject } = require('powercord/injector');
 
@@ -16,7 +16,7 @@ const { default: ImageResolve } = getModule([ 'getUserAvatarURL' ], false);
 const UNINJECT_IDS = [];
 
 /**
- * @param {String|Object} funcPath
+ * @param {String|Object} funcPath (ex ModuleName.default)
  * @param {function} patch
  */
 function inject2 (funcPath, patch) {
@@ -72,6 +72,8 @@ class General {
     this.customInject('GuildContextMenu.default', this.contextMenuPatch.guild);
     this.customInject('GuildChannelListContextMenu.default', this.contextMenuPatch.guildChannelList);
     this.customInject('NativeImageContextMenu.default', this.contextMenuPatch.image);
+    this.customInject('UserBanner.default', this.initNewContextMenu.UserBanner);
+    this.customInject('CustomStatus.default', this.initNewContextMenu.CustomStatus);
     this.injectToGetImageSrc('image-tools-media-proxy-sizes');
   }
 
@@ -105,13 +107,17 @@ class General {
   }
 
   get contextMenuPatch () {
+    function initButton (menu, args) {
+      menu.splice(menu.length - 1, 0, Button.render(args));
+      return menu;
+    }
+
     return {
-      message ([ { target, message: { content } } ], res, settings) {
-        if ((target.tagName === 'IMG') || (target.tagName === 'VIDEO' && target.loop)) {
+      message ([ { target, message: { content, stickerItems } } ], res, settings) {
+        if ((target.tagName === 'IMG') || (target.tagName === 'VIDEO' && target.loop) || (target.tagName === 'CANVAS' && stickerItems.length)) {
           const { width, height } = target;
           const menu = res.props.children;
           const hideNativeButtons = settings.get('hideNativeButtons', true);
-          const [ e, src ] = this.getImage(target);
 
           if (hideNativeButtons) {
             for (let i = menu.length - 1; i >= 0; i -= 1) {
@@ -124,17 +130,22 @@ class General {
             }
           }
 
-          this.initButton(menu, {
-            images: {
-              [e]: {
-                src,
-                original: this.isUrl(content) ? content : null,
-                width: width * 2,
-                height: height * 2
-              }
-            },
-            settings
-          });
+          if (target.tagName === 'CANVAS') {
+            menu.splice(menu.length - 1, 0, Button.renderSticker(stickerItems[0].id, settings));
+          } else {
+            const [ e, src ] = this.getImage(target);
+            initButton(menu, {
+              images: {
+                [e]: {
+                  src,
+                  original: this.isUrl(content) ? content : null,
+                  width: width * 2,
+                  height: height * 2
+                }
+              },
+              settings
+            });
+          }
         }
         return res;
       },
@@ -148,7 +159,7 @@ class General {
         };
 
         if (user.discriminator !== '0000') {
-          this.initButton(res.props.children.props.children, { images, settings });
+          initButton(res.props.children.props.children, { images, settings });
         }
         return res;
       },
@@ -166,7 +177,7 @@ class General {
         };
 
         if (images.webp.src) {
-          this.initButton(res.props.children, { images, settings });
+          initButton(res.props.children, { images, settings });
         }
         return res;
       },
@@ -195,7 +206,7 @@ class General {
           png: { src: src.replace('.webp', '.png') }
         };
 
-        this.initButton(res.props.children, { images, settings });
+        initButton(res.props.children, { images, settings });
         return res;
       },
 
@@ -203,18 +214,73 @@ class General {
         if (guild.banner) {
           const url = new URL(ImageResolve.getGuildBannerURL(guild));
           const e = url.pathname.split('.').pop();
-          url.searchParams.set('size', '2048');
 
           const images = {
             [e]: {
-              src: url.href,
+              src: this.fixBannerUrlSize(url.href),
               width: 2048,
               height: 918
             }
           };
 
-          this.initButton(res.props.children, { images, settings });
+          initButton(res.props.children, { images, settings });
         }
+        return res;
+      }
+    };
+  }
+
+  get initNewContextMenu () {
+    function genContextMenu (e, id, btnRenderParams) {
+      const { default: Menu, MenuGroup } = getModule([ 'MenuGroup' ], false);
+      const { contextMenu: { openContextMenu, closeContextMenu } } = require('powercord/webpack');
+
+      return openContextMenu(e, () =>
+        React.createElement(Menu, {
+          navId: id,
+          onClose: closeContextMenu,
+          children: React.createElement(MenuGroup, null, Button.render(btnRenderParams))
+        })
+      );
+    }
+
+    return {
+      UserBanner ([ { user } ], res, settings) {
+        if (!res.props.onContextMenu) { // @todo else ?
+          if (user.banner) {
+            const size = { width: 2048, height: 918 };
+            const images = {
+              png: { src: this.fixBannerUrlSize(ImageResolve.getUserBannerURL(user, false)).replace('.webp', '.png'), ...size },
+              webp: { src: this.fixBannerUrlSize(ImageResolve.getUserBannerURL(user, false)), ...size },
+              gif:  ImageResolve.hasAnimatedUserBanner(user) ? { src: this.fixBannerUrlSize(ImageResolve.getUserBannerURL(user, true)), ...size } : null
+            };
+
+            res.props.onContextMenu = (e) => genContextMenu(e, 'user-banner', { images, settings });
+          }
+        }
+        return res;
+      },
+
+      CustomStatus (args, res, settings) {
+        if (!res.props.onContextMenu) { // @todo else ?
+          res.props.onContextMenu = (event) => {
+            const { target } = event;
+            if (target.tagName === 'IMG') {
+              const [ e, src ] = this.getImage(target);
+              const { width, height } = target;
+              const images = {
+                [e]: {
+                  src,
+                  width: width * 2,
+                  height: height * 2
+                }
+              };
+
+              return genContextMenu(event, 'custom-status', { images, settings });
+            }
+          };
+        }
+
         return res;
       }
     };
@@ -258,9 +324,10 @@ class General {
     return true;
   }
 
-  initButton (menu, args) {
-    menu.splice(menu.length - 1, 0, Button.render(args));
-    return menu;
+  fixBannerUrlSize (url) {
+    url = new URL(url);
+    url.searchParams.set('size', '2048');
+    return url.href;
   }
 
   addDiscordHost (url) {
@@ -308,29 +375,36 @@ class Overlay {
 
   imageModalRender (_, res) {
     const { wrapper, downloadLink } = imageModalClasses;
-    const Wrapper = findInReactTree(res, ({ className }) => className === wrapper);
-    const LazyImage = findInReactTree(res, ({ type }) => type?.displayName === 'LazyImage');
-    const footerIndex = Wrapper.children.findIndex(({ props }) => props?.className === downloadLink);
+    const Sticker = getModuleByDisplayName('Sticker', false);
+    const Wrapper = findInReactTree(res, ({ className }) => className === wrapper).children;
+    const LazyImageIndex = Wrapper.findIndex(({ type }) => type?.displayName === 'LazyImage');
+    const footerIndex = Wrapper.findIndex(({ props }) => props?.className === downloadLink);
+    const LazyImage = Wrapper[LazyImageIndex];
 
     if (LazyImage) {
-      if (this.patchImageSize) {
-        const imgComp = LazyImage.props;
-        const { height, width } = imgComp;
+      if (LazyImage.props.stickerAssets) {
+        Wrapper[LazyImageIndex] = React.createElement(Sticker, LazyImage.props.stickerAssets);
+      } else {
+        if (this.patchImageSize) {
+          const imgComp = LazyImage.props;
+          const { height, width } = imgComp;
 
-        imgComp.height = height * 2;
-        imgComp.width = width * 2;
-        imgComp.maxHeight = document.body.clientHeight * 70 / 100;
-        imgComp.maxWidth = document.body.clientWidth * 80 / 100;
+          imgComp.height = height * 2;
+          imgComp.width = width * 2;
+          imgComp.maxHeight = document.body.clientHeight * 70 / 100;
+          imgComp.maxWidth = document.body.clientWidth * 80 / 100;
+        }
+
+        if (LazyImage.type.isAnimated({ original: LazyImage.props.src })) {
+          LazyImage.props.animated = true;
+        }
       }
 
-      if (LazyImage.type.isAnimated({ original: LazyImage.props.src })) {
-        LazyImage.props.animated = true;
-      }
-      this.imageModalRenderOpts.lensConfig.children = LazyImage;
+      this.imageModalRenderOpts.lensConfig.children = Wrapper[LazyImageIndex];
     }
 
-    Wrapper.children[footerIndex] = React.createElement(OverlayUI, {
-      originalFooter: Wrapper.children[footerIndex],
+    Wrapper[footerIndex] = React.createElement(OverlayUI, {
+      originalFooter: Wrapper[footerIndex],
       ...this.imageModalRenderOpts.overlayUI
     });
 

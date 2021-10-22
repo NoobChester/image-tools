@@ -28,6 +28,7 @@ module.exports = class ImageModalWrapper extends React.PureComponent {
       <>
         <Lens {...this.state.lensConfig} />
         <div
+          className={[ this.state.lensConfig.show ? 'image-tools-blur-image' : '' ]}
           ref={this.imgRef}
           onMouseDown={() => {
             this.imgRef.current.click(); // чтобы скрыть меню перед линзой
@@ -42,7 +43,7 @@ module.exports = class ImageModalWrapper extends React.PureComponent {
   }
 
   async waitFor () {
-    const elem = this.imgRef.current?.querySelector(`.${imageWrapper} > img, video`);
+    const elem = this.imgRef.current?.querySelector(`.${imageWrapper} > img, video, canvas`);
 
     if (!elem || elem?.classList?.contains(imagePlaceholder)) {
       await sleep(5);
