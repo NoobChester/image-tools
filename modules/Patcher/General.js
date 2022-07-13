@@ -1,61 +1,17 @@
-/* eslint-disable no-use-before-define, object-property-newline,no-undefined */
-// noinspection JSUnusedGlobalSymbols
-
 const { React, getModule, getModuleByDisplayName } = require('powercord/webpack');
 const { findInReactTree } = require('powercord/util');
 const { inject, uninject } = require('powercord/injector');
 
-const Button = require('../components/Button.jsx');
-const LensSettings = require('../tools/Lens/Settings.jsx');
-const OverlayUI = require('../components/OverlayUI.jsx');
-const ImageModalWrapper = require('../components/ImageModalWrapper.jsx');
+const Button = require('../../components/Button.jsx');
+const LensSettings = require('../../tools/Lens/Settings.jsx');
 
-const imageModalClasses = getModule([ 'wrapper', 'downloadLink' ], false);
+const inject2 = require('../../utils/inject2.js');
+
 const { default: ImageResolve } = getModule([ 'getUserAvatarURL' ], false);
 
-const UNINJECT_IDS = [];
-
-/**
- * @param {String|Object} funcPath (ex ModuleName.default)
- * @param {function} patch
- */
-function inject2 (funcPath, patch) {
-  const path = funcPath.split('.');
-  const moduleName = path.shift();
-  const method = path.pop();
-  const injectId = `image-tools${moduleName.replace(/[A-Z]/g, (l) => `-${l.toLowerCase()}`)}`;
-  const module = getModule((m) => m?.default?.displayName === moduleName, false);
-  const injectTo = getModulePath(); // eslint-disable-line no-use-before-define
-
-  if (module === null) {
-    console.error(`Module "${moduleName}" not found`);
-    return;
-  }
-  inject(injectId, injectTo, method, patch);
-  module.default.displayName = moduleName;
-  return injectId;
-
-  function getModulePath () {
-    let obj = module;
-    if (path.length) {
-      for (let i = 0, n = path.length; i < n; ++i) {
-        const k = path[i];
-        if (k in obj) {
-          obj = obj[k];
-        } else {
-          throw new Error(`Not found ${[ ...path, method ].join('.')} in ${moduleName}`);
-        }
-      }
-    }
-    return obj;
-  }
-}
-
-
-/**
- * @typeof General
- */
-class General {
+/* eslint-disable no-use-before-define, object-property-newline,no-undefined */
+// noinspection JSUnusedGlobalSymbols
+module.exports = class General {
   constructor (settings) {
     this.settings = settings;
     this.uninjectIDs = [];
@@ -63,33 +19,33 @@ class General {
   }
 
   inject () {
-    this.customInject('TransitionGroup.default.prototype.render', (...args) => {
+    this.injectWithSettings('TransitionGroup.default.prototype.render', (...args) => {
       this.isModalOpen = false;
       return this.overlayCallback(...args, () => this.isModalOpen = true);
     });
-    this.customInject('MessageContextMenu.default', this.contextMenuPatch.message);
-    this.customInject('GuildChannelUserContextMenu.default', this.contextMenuPatch.user);
-    this.customInject('DMUserContextMenu.default', this.contextMenuPatch.user);
-    this.customInject('UserGenericContextMenu.default', this.contextMenuPatch.user);
-    this.customInject('GroupDMUserContextMenu.default', this.contextMenuPatch.user);
-    this.customInject('GroupDMContextMenu.default', this.contextMenuPatch.groupDM);
-    this.customInject('GuildContextMenu.default', this.contextMenuPatch.guild);
-    this.customInject('GuildChannelListContextMenu.default', this.contextMenuPatch.guildChannelList);
-    this.customInject('NativeImageContextMenu.default', this.contextMenuPatch.image);
-    this.customInject('UserBanner.default', this.initNewContextMenu.UserBanner);
-    this.customInject('CustomStatus.default', this.initNewContextMenu.CustomStatus);
+    this.injectWithSettings('UserBanner.default', this.initNewContextMenu.userBanner);
+    this.injectWithSettings('CustomStatus.default', this.initNewContextMenu.customStatus);
     this.injectToGetImageSrc('image-tools-media-proxy-sizes');
+    this.patchOpenContextMenuLazy('image-tools-open-context-menu-lazy', {
+      MessageContextMenu: this.contextMenuPatch.message,
+      GuildChannelUserContextMenu: this.contextMenuPatch.user,
+      DMUserContextMenu: this.contextMenuPatch.user,
+      UserGenericContextMenu: (...args) => this.contextMenuPatch.user.call(this, ...args, (r) => r[0].props.children),
+      GroupDMUserContextMenu: this.contextMenuPatch.user,
+      GroupDMContextMenu: this.contextMenuPatch.groupDM,
+      GuildContextMenu: this.contextMenuPatch.guild,
+      GuildChannelListContextMenu: this.contextMenuPatch.guildChannelList,
+      DeveloperContextMenu: this.contextMenuPatch.developer,
+      NativeImageContextMenu: this.contextMenuPatch.image
+    });
   }
 
   uninject () {
-    [
-      ...this.uninjectIDs,
-      ...UNINJECT_IDS
-    ].forEach(uninject);
+    this.uninjectIDs.forEach(uninject);
   }
 
   overlayCallback (args, res, settings, switchModal) {
-    const Overlay = require('../components/Overlay');
+    const Overlay = require('../../components/Overlay');
     const nativeModalChildren = findInReactTree(res, ({ props }) => props?.render);
     let tree;
 
@@ -110,6 +66,66 @@ class General {
     return res;
   }
 
+  patchOpenContextMenuLazy (id, menus) {
+    inject(id, getModule([ 'openContextMenuLazy' ], false), 'openContextMenuLazy', ([ event, lazyRender, params ]) => {
+      const wrapLazyRender = async () => {
+        const render = await lazyRender(event);
+
+        return (config) => {
+          const menu = render(config);
+          const CMName = (menu?.type?.displayName)
+            ? menu.type.displayName
+            : menu.type(config).props.children.type.displayName;
+
+          if (CMName) {
+            const moduleByDisplayName = getModuleByDisplayName(CMName, false);
+            const module = getModule((m) => m.default === menu.type || m.__powercordOriginal_default === menu.type, false);
+
+            if (CMName in menus) {
+              if (moduleByDisplayName !== null) {
+                this.injectWithSettings(`${CMName}.default`, menus[CMName]);
+              } else if (module !== null) {
+                wrapAndInjectWithSettings.call(this, CMName, menus[CMName], module);
+              }
+
+              delete menus[CMName];
+            }
+
+            if (moduleByDisplayName !== null) {
+              menu.type = moduleByDisplayName;
+            } else if (module !== null) {
+              menu.type = module.default;
+            }
+          }
+          if (!Object.keys(menus).length) {
+            uninject(id);
+          }
+
+          return menu;
+        };
+      };
+
+      return [ event, wrapLazyRender, params ];
+    }, true);
+
+    this.uninjectIDs.push(id);
+
+
+    function wrapAndInjectWithSettings (CMName, patch, module) {
+      const injectId = `image-tools${CMName.replace(/[A-Z]/g, (l) => `-${l.toLowerCase()}`)}`;
+      const memorizeRender = window._.memoize((render) => (...renderArgs) => (
+        patch.call(this, renderArgs, render(...renderArgs), this.settings)
+      ));
+
+      inject(injectId, module, 'default', (args, res) => {
+        res.props.children.type = memorizeRender(res.props.children.type);
+        return res;
+      });
+
+      this.uninjectIDs.push(injectId);
+    }
+  }
+
   get contextMenuPatch () {
     function initButton (menu, args) {
       menu.splice(menu.length - 1, 0, Button.render(args));
@@ -118,7 +134,7 @@ class General {
 
     return {
       message ([ { target, message: { content, stickerItems } } ], res, settings) {
-        if ((target.tagName === 'IMG') || (target.tagName === 'VIDEO' && target.loop) || (target.tagName === 'CANVAS' && stickerItems.length)) {
+        if ((target.tagName === 'IMG') || (target.getAttribute("data-role") === 'img') || (target.getAttribute("data-type") === 'sticker' && stickerItems.length)) {
           const { width, height } = target;
           const menu = res.props.children;
           const hideNativeButtons = settings.get('hideNativeButtons', true);
@@ -154,7 +170,7 @@ class General {
         return res;
       },
 
-      user ([ { user, guildId } ], res, settings) {
+      user ([ { user, guildId } ], res, settings, getUserContext = (e) => e) {
         const { getGuild } = getModule([ 'getGuild' ], false);
         const guildMemberAvatarURLParams = { userId: user.id, guildId };
         const guildMemberAvatars =  Object.entries(user.guildMemberAvatars);
@@ -180,7 +196,8 @@ class General {
         };
 
         if (user.discriminator !== '0000') {
-          initButton(res.props.children.props.children, { images, settings });
+          const menu = findInReactTree(res, ({ props }) => props?.navId === 'user-context').props.children;
+          initButton(getUserContext(menu), { images, settings });
         }
 
         return res;
@@ -248,6 +265,31 @@ class General {
           initButton(res.props.children, { images, settings });
         }
         return res;
+      },
+
+      developer ([ { target } ], res, settings) {
+        if (target.tagName === 'IMG') {
+          const { width, height } = target;
+          let menu = res.props.children;
+
+          if (!Array.isArray(menu)) {
+            res.props.children = [ menu ];
+            menu = res.props.children;
+          }
+
+          const [ e, src ] = this.getImage(target);
+          initButton(menu, {
+            images: {
+              [e]: {
+                src,
+                width: width * 5,
+                height: height * 5
+              }
+            },
+            settings
+          });
+        }
+        return res;
       }
     };
   }
@@ -267,10 +309,11 @@ class General {
     }
 
     return {
-      UserBanner ([ { user } ], res, settings) {
+      userBanner ([ { user } ], res, settings) {
         if (!res.props.onContextMenu) { // @todo else ?
           if (user.banner) {
-            const size = { width: 2048, height: 918 };
+            const size = { width: 2048,
+              height: 918 };
             const images = {
               png: { src: this.fixUrlSize(ImageResolve.getUserBannerURL(user, false)).replace('.webp', '.png'), ...size },
               webp: { src: this.fixUrlSize(ImageResolve.getUserBannerURL(user, false)), ...size },
@@ -283,7 +326,7 @@ class General {
         return res;
       },
 
-      CustomStatus (args, res, settings) {
+      customStatus (args, res, settings) {
         if (!res.props.onContextMenu) { // @todo else ?
           res.props.onContextMenu = (event) => {
             const { target } = event;
@@ -311,21 +354,22 @@ class General {
   injectToGetImageSrc (id) {
     const imageDiscordUtils = getModule([ 'getImageSrc' ], false);
     inject(id, imageDiscordUtils, 'getImageSrc', (args) => {
-      if (this.isModalOpen) {
-        args[3] = this.settings.get('compression', 1); // отменить коэффициент размеров
+      const compression = this.settings.get('compression', 0);
+      if (this.isModalOpen && compression > 0) {
+        args[3] = compression;
       }
       return args;
     }, true);
     this.uninjectIDs.push(id);
   }
 
-  customInject (funcPath, patch) {
+  injectWithSettings (funcPath, patch) {
     const id = inject2(funcPath, (...args) => patch.call(this, ...args, this.settings));
     this.uninjectIDs.push(id);
   }
 
   getImage (target) {
-    const src = target.src.split('?').shift();
+    const src = ((target.tagName === 'IMG') ? target.src : target.href).split('?').shift();
     let e = src.substr(src.lastIndexOf('.') + 1, src.length);
     if (e.length > 3) {
       if (src.endsWith('/mp4')) {
@@ -353,118 +397,6 @@ class General {
   }
 
   addDiscordHost (url) {
-    return new URL(url, (url.startsWith('/assets/')) ? window.GLOBAL_ENV.ASSET_ENDPOINT : undefined).href;
+    return new URL(url, (url.startsWith('/assets/')) ? `https:${window.GLOBAL_ENV.ASSET_ENDPOINT}` : undefined).href;
   }
-}
-
-
-/**
- * @typeof Overlay
- */
-class Overlay {
-  constructor (settings, children, { patchModalLayerOpts, imageModalRenderOpts }) {
-    this.settings = settings;
-    this.uninjectIDs = [];
-    this.patchImageSize = settings.get('patchImageSize', true);
-    this.children = children;
-    this.patchModalLayerOpts = patchModalLayerOpts;
-    this.imageModalRenderOpts = imageModalRenderOpts;
-  }
-
-  inject () {
-    this.customInject('Image.default.prototype.render', this.imageRender);
-    this.customInject('ImageModal.default.prototype.render', this.imageModalRender);
-    this.patchBackdrop('image-tools-overlay-backdrop'); // @todo найти способ пропатчить closeModal
-    this.patchModalLayer('image-tools-overlay-modal-layer');
-    this.uninjectIDs.forEach((e) => {
-      if (!UNINJECT_IDS.includes(e)) {
-        UNINJECT_IDS.push(e);
-      }
-    });
-  }
-
-  uninject () {
-    this.uninjectIDs.forEach(uninject);
-  }
-
-  imageRender (_, res) {
-    const Video = findInReactTree(res, ({ type }) => type?.displayName === 'Video');
-    if (Video) {
-      Video.props.play = true;
-    }
-    return res;
-  }
-
-  imageModalRender (_, res) {
-    const { wrapper, downloadLink } = imageModalClasses;
-    const Sticker = getModuleByDisplayName('Sticker', false);
-    const Wrapper = findInReactTree(res, ({ className }) => className === wrapper).children;
-    const LazyImageIndex = Wrapper.findIndex(({ type }) => type?.displayName === 'LazyImage');
-    const footerIndex = Wrapper.findIndex(({ props }) => props?.className === downloadLink);
-    const LazyImage = Wrapper[LazyImageIndex];
-
-    if (LazyImage) {
-      if (LazyImage.props.stickerAssets) {
-        Wrapper[LazyImageIndex] = React.createElement(Sticker, LazyImage.props.stickerAssets);
-      } else {
-        if (this.patchImageSize) {
-          const imgComp = LazyImage.props;
-          const { height, width } = imgComp;
-
-          imgComp.height = height * 2;
-          imgComp.width = width * 2;
-          imgComp.maxHeight = document.body.clientHeight * 70 / 100;
-          imgComp.maxWidth = document.body.clientWidth * 80 / 100;
-        }
-
-        if (LazyImage.type.isAnimated({ original: LazyImage.props.src })) {
-          LazyImage.props.animated = true;
-        }
-      }
-
-      this.imageModalRenderOpts.lensConfig.children = Wrapper[LazyImageIndex];
-    }
-
-    Wrapper[footerIndex] = React.createElement(OverlayUI, {
-      originalFooter: Wrapper[footerIndex],
-      ...this.imageModalRenderOpts.overlayUI
-    });
-
-    return res;
-  }
-
-  patchBackdrop (id) {
-    const backdrop = findInReactTree(this.children, ({ props }) => props?.onClose);
-    inject(id, backdrop.props, 'onClose', () => {
-      this.uninject();
-      return [ true ];
-    }, true);
-    this.uninjectIDs.push(id);
-  }
-
-  patchModalLayer (id) {
-    const ModalLayer = findInReactTree(this.children, ({ props }) => props?.render);
-
-    inject(id, ModalLayer.props, 'render', (args, res) => {
-      res.props.children = (
-        React.createElement(ImageModalWrapper, {
-          children: res.props.children,
-          ...this.patchModalLayerOpts
-        })
-      );
-      return res;
-    });
-    this.uninjectIDs.push(id);
-  }
-
-
-  customInject (funcPath, patch) {
-    const id = inject2(funcPath, (...args) => patch.call(this, ...args, this.settings));
-    this.uninjectIDs.push(id);
-  }
-}
-
-module.exports = {
-  General,
-  Overlay
 };
